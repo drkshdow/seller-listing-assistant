@@ -20,7 +20,12 @@ pip install -r requirements.txt
 
 ```bash
 cp .env.example .env
-# Edit .env and set your OPENAI_API_KEY
+# Edit .env and set your AWS credentials:
+# - AWS_ACCESS_KEY_ID
+# - AWS_SECRET_ACCESS_KEY
+# - AWS_SESSION_TOKEN (if using temporary credentials)
+# - AWS_REGION (default: us-east-1)
+# - BEDROCK_MODEL (default: amazon.nova-pro-v1:0)
 ```
 
 ### 3. Run the agent
@@ -29,13 +34,22 @@ cp .env.example .env
 python main.py
 ```
 
-Enable verbose traces:
+Traces are written to `traces/session_<id>.jsonl` automatically.
 
-```bash
-DEBUG=true python main.py
-```
+---
 
-Traces are also written to `traces/session_<id>.jsonl` automatically.
+## LLM Model
+
+This project uses **AWS Bedrock** with the **Amazon Nova Pro** model (`amazon.nova-pro-v1:0`).
+
+**Key Implementation Details:**
+- **Message Ordering**: AWS Bedrock requires conversations to start with a user message. The system automatically handles message history to ensure proper ordering.
+- **Context Window Management**: Uses a sliding window (last 10 messages) with LLM-generated summaries of older conversations to stay within token limits.
+- **Token Limit**: Set to 1024 max tokens per response (configurable via `MAX_TOKENS` in `.env`).
+
+**Alternative Models**: The architecture is provider-agnostic. To use OpenAI instead:
+1. Replace `ChatBedrock` with `ChatOpenAI` in `agent/nodes.py`
+2. Update environment variables in `.env` and `agent/config.py`
 
 ---
 
@@ -135,9 +149,9 @@ Every turn appends one JSON record to `traces/session_<session_id>.jsonl`:
   "turn": 3,
   "user": "Here is my updated title: Premium SoundMax Headphones",
   "tool_calls": [
-    {"name": "update_listing",  "args": {"listing_id": "LST-40012", "field_path": "title", "new_value": "..."}, "result": {"updated": true}},
-    {"name": "validate_listing","args": {"listing": {}}, "result": {"passed": true, "missing_fields": []}},
-    {"name": "screen_policy",   "args": {"listing": {}}, "result": {"passed": true, "violations": []}},
+    {"name": "update_listing",  "args": {"listing_id": "LST-40012", "field_path": "title", "new_value": "Premium SoundMax Headphones"}, "result": {"updated": true}},
+    {"name": "validate_listing","args": {"listing": {...}}, "result": {"passed": true, "missing_fields": []}},
+    {"name": "screen_policy",   "args": {"listing": {...}}, "result": {"passed": true, "violations": []}},
     {"name": "publish_listing", "args": {"listing_id": "LST-40012"},  "result": {"status": "published"}}
   ],
   "assistant": "Great news — your listing is now live on the marketplace!",
@@ -150,6 +164,8 @@ Every turn appends one JSON record to `traces/session_<session_id>.jsonl`:
 }
 ```
 
+**Note**: Traces contain only essential information. Full LLM prompts are not logged to keep files compact.
+
 ---
 
 ## Correction Round Logic
@@ -158,6 +174,7 @@ Every turn appends one JSON record to `traces/session_<session_id>.jsonl`:
 |---|---|
 | 0 issues after checks | Publish immediately |
 | 1–3 issues | Enter conversational correction loop |
-| > 3 issues | List all issues, ask seller to resubmit from scratch |
-| ≤ 3 issues, rounds exhausted (default: 3) | Escalate to human reviewer |
+| > 3 issues | List all issues, ask seller to resubmit complete listing from scratch |
+| ≤ 3 issues, 2 rounds exhausted | Escalate to human reviewer |
+| > 3 issues, 2 resubmissions failed | Escalate to human reviewer |
 | New listing submitted while one is in-progress | Close/escalate prior listing, start new one |
